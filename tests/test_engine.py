@@ -107,16 +107,18 @@ def test_busy_platform_flow_is_not_a_match_and_stays_allowed(tmp_path):
 def test_known_server_range_is_dropped_on_the_first_probe(tmp_path):
     cat = Catalog(tmp_path / "known.db")
     cat.import_geo(
-        [{
-            "cidr": "198.51.100.0/24",
-            "city": "Los Angeles",
-            "region": "California",
-            "region_code": "CA",
-            "country": "United States",
-            "country_code": "US",
-            "lat": 34.05,
-            "lon": -118.24,
-        }],
+        [
+            {
+                "cidr": "198.51.100.0/24",
+                "city": "Los Angeles",
+                "region": "California",
+                "region_code": "CA",
+                "country": "United States",
+                "country_code": "US",
+                "lat": 34.05,
+                "lon": -118.24,
+            }
+        ],
         "community_geo",
         0.6,
     )
@@ -133,16 +135,18 @@ def test_known_server_range_is_dropped_on_the_first_probe(tmp_path):
 def test_known_server_heartbeat_on_3074_is_control_traffic(tmp_path):
     cat = Catalog(tmp_path / "known3074.db")
     cat.import_geo(
-        [{
-            "cidr": "198.51.100.0/24",
-            "city": "Los Angeles",
-            "region": "California",
-            "region_code": "CA",
-            "country": "United States",
-            "country_code": "US",
-            "lat": 34.05,
-            "lon": -118.24,
-        }],
+        [
+            {
+                "cidr": "198.51.100.0/24",
+                "city": "Los Angeles",
+                "region": "California",
+                "region_code": "CA",
+                "country": "United States",
+                "country_code": "US",
+                "lat": 34.05,
+                "lon": -118.24,
+            }
+        ],
         "community_geo",
         0.6,
     )
@@ -171,18 +175,20 @@ def test_explicit_deny_still_blocks_a_platform_port(tmp_path):
 def test_provider_block_does_not_drop_relay_traffic(tmp_path):
     cat = Catalog(tmp_path / "relay.db")
     cat.import_geo(
-        [{
-            "cidr": "198.51.100.0/24",
-            "city": "Los Angeles",
-            "region": "California",
-            "region_code": "CA",
-            "country": "United States",
-            "country_code": "US",
-            "lat": 34.05,
-            "lon": -118.24,
-            "asn": "AS20473",
-            "provider": "The Constant Company",
-        }],
+        [
+            {
+                "cidr": "198.51.100.0/24",
+                "city": "Los Angeles",
+                "region": "California",
+                "region_code": "CA",
+                "country": "United States",
+                "country_code": "US",
+                "lat": 34.05,
+                "lon": -118.24,
+                "asn": "AS20473",
+                "provider": "The Constant Company",
+            }
+        ],
         "community_geo",
         0.6,
     )
@@ -203,7 +209,9 @@ def test_provider_block_does_not_drop_relay_traffic(tmp_path):
 
 
 def test_explicit_deny_applies_immediately_in_safe_scope(tmp_path):
-    policy = Policy(allow=AllowSpec(regions=["US-OH"]), deny=DenySpec(cidrs=["198.51.100.0/24"]))
+    policy = Policy(
+        allow=AllowSpec(regions=["US-OH"]), deny=DenySpec(cidrs=["198.51.100.0/24"])
+    )
     cat, eng = setup(tmp_path, policy)
     verdict = eng.observe("198.51.100.10", 30000, "outbound", 200, now=1000.0)
     assert verdict["allow"] is False
@@ -212,7 +220,9 @@ def test_explicit_deny_applies_immediately_in_safe_scope(tmp_path):
 
 
 def test_denied_short_match_is_reported_as_cancelled(tmp_path):
-    policy = Policy(allow=AllowSpec(regions=["US-OH"]), deny=DenySpec(cidrs=["198.51.100.0/24"]))
+    policy = Policy(
+        allow=AllowSpec(regions=["US-OH"]), deny=DenySpec(cidrs=["198.51.100.0/24"])
+    )
     cat, eng = setup(tmp_path, policy)
     t = 1000.0
     for _ in range(80):
@@ -225,6 +235,43 @@ def test_denied_short_match_is_reported_as_cancelled(tmp_path):
     assert state["cancelled_total"] == 1
     assert state["last_cancelled"]["cidr"] == "198.51.100.0/24"
     assert state["last_cancelled"]["duration_s"] < 60
+    cat.close()
+
+
+def test_repeated_blocked_matches_raise_a_run_count(tmp_path):
+    cat, eng = setup(tmp_path, Policy(allow=AllowSpec(regions=["US-OH"])))
+
+    def finished(ip: str, allowed: bool) -> None:
+        eng._record_finished(
+            {
+                "match": {
+                    "remote_ip": ip,
+                    "cidr": cidr_for(ip),
+                    "city": "",
+                    "region": "",
+                    "country": "",
+                    "started_at": "2026-11-12T17:00:00+00:00",
+                    "ended_at": "2026-11-12T17:00:13+00:00",
+                    "duration_s": 13,
+                    "bytes": 1000,
+                    "rtt_ms": 40,
+                    "allowed": allowed,
+                    "reason": "Allowed by region" if allowed else "Not in allowlist",
+                },
+                "port": 30000,
+            }
+        )
+
+    for _ in range(3):
+        finished("198.51.100.10", False)
+
+    state = eng.state()
+    assert state["blocked_run"] == 3
+    assert state["blocked_info"]["city"] == "Los Angeles"
+    assert state["blocked_info"]["region_key"] == "US-CA"
+
+    finished("203.0.113.10", True)
+    assert eng.state()["blocked_run"] == 0
     cat.close()
 
 
@@ -304,7 +351,6 @@ def test_match_record_is_written_outside_the_engine_lock(tmp_path):
     assert watcher.recorded == 1
     assert watcher.lock_free is True
     cat.close()
-
 
 
 def test_short_flow_is_not_a_match(tmp_path):

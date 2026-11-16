@@ -23,12 +23,16 @@ const SCREEN_META = {
 const DEMO_PARAM = new URLSearchParams(location.search).has("demo");
 // Docs screenshots pass "clean" so the preview banner stays out of the frame.
 const CLEAN_PARAM = new URLSearchParams(location.search).has("clean");
+// The loop banner needs a denied run; the preview can show it without waiting.
+const LOOP_PARAM = new URLSearchParams(location.search).has("loop");
 let DEMO = DEMO_PARAM;
 
 const state = {
   boot: null,
   screen: "dashboard",
   cancelDismissed: false,
+  loopDismissed: false,
+  loopRegionKey: "",
   regionMode: "all",
   regionQuery: "",
   serverQuery: "",
@@ -328,7 +332,7 @@ const demo = (() => {
     manual: false,
     checked: true,
     available: demoUpdateOffer,
-    version: demoUpdateOffer ? "2.1.2" : "2.1.1",
+    version: demoUpdateOffer ? "2.1.2" : "2.1.2",
     size: demoUpdateOffer ? 28_400_000 : 0,
     sha256: "",
     url: "",
@@ -370,6 +374,12 @@ const demo = (() => {
     match_count: 6,
     cancelled_total: 0,
     last_cancelled: null,
+    blocked_run: LOOP_PARAM ? 3 : 0,
+    blocked_limit: 3,
+    blocked_since: 0,
+    blocked_info: LOOP_PARAM
+      ? { cidr: "198.51.100.0/24", city: "Los Angeles", region: "California", region_key: "US-CA", at: 0 }
+      : null,
     current,
     recent: [
       { ip: "198.51.100.19", port: 30012, reason: "Not in allowlist", at: "2026-10-30T17:05:12+00:00" },
@@ -446,7 +456,7 @@ soft_mode:
   const demoApi = {
     bootstrap() {
       return {
-        version: "2.1.1",
+        version: "2.1.2",
         elevated: true,
         driver: true,
         driver_error: "",
@@ -585,7 +595,7 @@ soft_mode:
           checking: false,
           checked: true,
           available: demoUpdateOffer,
-          version: demoUpdateOffer ? "2.1.2" : "2.1.1",
+          version: demoUpdateOffer ? "2.1.2" : "2.1.2",
         };
       }, 700);
       return { ok: true };
@@ -602,7 +612,7 @@ soft_mode:
             ...demoUpdateState,
             downloading: false,
             downloaded: true,
-            installer: "%LOCALAPPDATA%\\cod-ping-king\\updates\\COD-Ping-King-2.1.1.exe",
+            installer: "%LOCALAPPDATA%\\cod-ping-king\\updates\\COD-Ping-King-2.1.2.exe",
           };
         }
       }, 240);
@@ -729,6 +739,20 @@ function renderChrome(boot) {
     const howLong = cancelled.duration_s ? ` after ${fmtDuration(cancelled.duration_s)}` : "";
     $("#cancel-banner-text").textContent =
       `Left ${where}${howLong} because it is outside your regions. The game may drop you back to the menu.`;
+  }
+
+  const run = Number(s.blocked_run || 0);
+  const limit = Number(s.blocked_limit || 3);
+  const info = s.blocked_info || null;
+  if (run < limit && state.loopDismissed) state.loopDismissed = false;
+  const showLoop = Boolean(s.filtering) && run >= limit && info && !state.loopDismissed;
+  $("#loop-banner").hidden = !showLoop;
+  if (showLoop) {
+    const where = info.city || "that server";
+    $("#loop-banner-text").textContent =
+      `The game tried ${where} ${run} times in the last ten minutes and each match was blocked. Allow it or pause filtering instead of retrying.`;
+    $("#loop-allow").textContent = info.region ? `Allow ${info.region}` : "Allow this region";
+    state.loopRegionKey = info.region_key || "";
   }
   renderUpdateBanner(boot);
 }
@@ -1655,6 +1679,20 @@ function bindEvents() {
   $("#cancel-dismiss").addEventListener("click", () => {
     state.cancelDismissed = true;
     $("#cancel-banner").hidden = true;
+  });
+
+  $("#loop-allow").addEventListener("click", () => {
+    if (!state.loopRegionKey) return;
+    state.loopDismissed = true;
+    mutate(call("set_region_blocked", state.loopRegionKey, false), "Region allowed");
+  });
+  $("#loop-pause").addEventListener("click", () => {
+    state.loopDismissed = true;
+    mutate(call("set_filtering", false), "Filtering paused");
+  });
+  $("#loop-dismiss").addEventListener("click", () => {
+    state.loopDismissed = true;
+    $("#loop-banner").hidden = true;
   });
 
   $("#allow-region-btn").addEventListener("click", () => {

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>COD Ping King</title>
-<link rel="stylesheet" href="styles.css?v=2.1.1">
+<link rel="stylesheet" href="styles.css?v=2.1.2">
 </head>
 <body>
 <div id="app">
@@ -59,7 +59,7 @@
         </div>
       </div>
       <div class="rail-meta">
-        <span id="rail-version">v2.1.1</span>
+        <span id="rail-version">v2.1.2</span>
         <button class="link" id="rail-pause">Pause</button>
       </div>
     </div>
@@ -109,6 +109,18 @@
         <span id="cancel-banner-text"></span>
       </div>
       <button class="btn btn-small" id="cancel-dismiss">Dismiss</button>
+    </div>
+
+    <div class="banner banner-warn" id="loop-banner" hidden>
+      <div>
+        <strong>No allowed server found.</strong>
+        <span id="loop-banner-text"></span>
+      </div>
+      <div class="banner-actions">
+        <button class="btn btn-small" id="loop-allow">Allow this region</button>
+        <button class="btn btn-small" id="loop-pause">Pause filtering</button>
+        <button class="btn btn-small" id="loop-dismiss">Dismiss</button>
+      </div>
     </div>
 
     <div class="banner banner-info" id="soft-banner" hidden>
@@ -571,8 +583,8 @@
 </div>
 
 <div class="toast-stack" id="toasts" aria-live="polite"></div>
-<script src="world.js?v=2.1.1"></script>
-<script src="app.js?v=2.1.1"></script>
+<script src="world.js?v=2.1.2"></script>
+<script src="app.js?v=2.1.2"></script>
 </body>
 </html>
 

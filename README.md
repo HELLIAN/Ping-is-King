@@ -46,7 +46,7 @@ leaving you searching; you can raise the delay or turn it off in Settings.
 
 ## Install
 
-1. Download `COD-Ping-King-2.1.1.exe` from the releases page.
+1. Download `COD-Ping-King-2.1.2.exe` from the releases page.
 2. Run it and allow the administrator prompt.
 3. Pick a desktop shortcut if you want one; the Start menu entry is always
    created.
@@ -117,6 +117,12 @@ Latency is an estimate from reply timing. A server cannot reply faster than its
 tick rate, so the number bottoms out near 16 ms even when the route is longer.
 **Block** adds a match's server to the deny list; the same button turns into
 **Unblock**.
+
+If three matches in ten minutes are blocked and none is allowed, the dashboard
+shows a **No allowed server found** banner naming the city. From there you can
+allow that region or pause filtering. This is what happens when every server the
+game is willing to place you on is outside your list; the banner stops the queue
+from repeating the same blocked join indefinitely.
 
 ### Regions
 
@@ -228,8 +234,10 @@ Windows Firewall checks block rules before allow rules and an allow rule cannot
 override a block.
 
 Rules are named `COD Ping King Block ...`, visible in Windows Firewall, and
-removed when filtering stops or the app exits. If it crashes, the next launch
-clears stale rules before applying new ones.
+disabled when filtering stops or the app exits. They are not deleted on a normal
+exit, so the next launch re-enables the same set instead of rebuilding thousands
+of addresses. The installer and uninstaller delete rules from an older build, and
+the **Remove firewall rules** button deletes the current ones outright.
 
 Without packet interception there are no driver counters. Packet counts and the
 ping estimate come from ETW events, and a verdict only decides whether a range
@@ -302,7 +310,9 @@ set. Run **Settings -> Update from public lists** for better data.
 
 **Stuck searching.** Check that at least one region is still allowed. The search
 guard removes the block rules after 45 seconds, but it cannot help if every
-catalogued server near you is denied. Widen the radius or add a region.
+catalogued server near you is denied. Widen the radius or add a region. If the
+game keeps finding the same blocked city, the dashboard banner offers to allow
+it or pause filtering.
 
 **Stuck on "Waiting for relay".** Relay and lobby hosts run on the same hosting
 providers as match servers, so a provider block can cut the relay and leave the
@@ -414,7 +424,7 @@ Build the installer with [Inno Setup 6](https://jrsoftware.org/isinfo.php):
 "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" packaging\installer.iss
 ```
 
-Output: `dist\installer\COD-Ping-King-2.1.1.exe`. Close a running copy before
+Output: `dist\installer\COD-Ping-King-2.1.2.exe`. Close a running copy before
 rebuilding into `dist`, or Windows locks the bundled DLLs. If that happens, build
 to `dist-next` and pass `/DDistDir=..\dist-next` to ISCC.
 

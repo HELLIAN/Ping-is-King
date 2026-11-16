@@ -34,13 +34,22 @@ PLATFORM_PORT_RANGE = (27000, 27199)
 # played. Worth telling the user about instead of silently returning to menu.
 CANCEL_NOTICE_S = 60
 
+# Three blocked match attempts in ten minutes means the allowlist has no server
+# the game is willing to place this player on. The dashboard offers a way out
+# instead of letting the queue repeat forever.
+BLOCK_RUN_LIMIT = 3
+BLOCK_RUN_WINDOW_S = 600.0
+
 # Quiet this long and the next packet counts as a new search rather than a
 # continuation of an old one.
 IDLE_RESET_S = 60.0
 
 
 def is_platform_port(port: int) -> bool:
-    return port in PLATFORM_PORTS or PLATFORM_PORT_RANGE[0] <= port <= PLATFORM_PORT_RANGE[1]
+    return (
+        port in PLATFORM_PORTS
+        or PLATFORM_PORT_RANGE[0] <= port <= PLATFORM_PORT_RANGE[1]
+    )
 
 
 def _iso(ts: float) -> str:
@@ -100,6 +109,8 @@ class Engine:
         self._match_count = 0
         self._cancelled_total = 0
         self._last_cancelled: dict | None = None
+        self._blocked_run: list[float] = []
+        self._blocked_info: dict | None = None
         self._scan_start = 0.0
         self._scan_count = 0
         self._last_activity = 0.0
@@ -114,6 +125,8 @@ class Engine:
             else:
                 self._soft_active = False
                 self._searching_since = None
+                self._blocked_run.clear()
+                self._blocked_info = None
 
     @property
     def filtering(self) -> bool:
@@ -135,7 +148,9 @@ class Engine:
         if now - self._searching_since < p.soft_mode.relax_after_s:
             return False
         self._soft_active = True
-        self._soft_reason = f"No match for {p.soft_mode.relax_after_s}s; unclassified endpoints allowed"
+        self._soft_reason = (
+            f"No match for {p.soft_mode.relax_after_s}s; unclassified endpoints allowed"
+        )
         self.log(f"search guard: {self._soft_reason}")
         return True
 
@@ -217,17 +232,27 @@ class Engine:
                 return flow.verdict
 
             rec = self._record(ip)
-            cluster = self.policy._clusters.get(rec.cluster) if rec is not None else None
+            cluster = (
+                self.policy._clusters.get(rec.cluster) if rec is not None else None
+            )
             unclassified = rec is None or not rec.city
             if self._soft_pinned_ip == ip and unclassified:
-                verdict = {"allow": True, "reason": "Soft mode held for current match", "kind": "soft"}
+                verdict = {
+                    "allow": True,
+                    "reason": "Soft mode held for current match",
+                    "kind": "soft",
+                }
             else:
                 verdict = self.policy.decide(ip, rec, cluster)
 
             # Soft mode is a search guard, not a policy override: it may admit
             # endpoints we know nothing about, never one we have located and
             # deliberately excluded.
-            if not verdict["allow"] and verdict.get("kind") == "unknown" and self._soft_relaxed(now):
+            if (
+                not verdict["allow"]
+                and verdict.get("kind") == "unknown"
+                and self._soft_relaxed(now)
+            ):
                 verdict = {"allow": True, "reason": "Soft mode", "kind": "soft"}
 
             verdict = self._scope(flow, verdict, now, rec)
@@ -286,10 +311,16 @@ class Engine:
         """Platform ports this endpoint has used, for block confirmations."""
         with self._lock:
             return sorted(
-                {port for (flow_ip, port) in self._flows if flow_ip == ip and is_platform_port(port)}
+                {
+                    port
+                    for (flow_ip, port) in self._flows
+                    if flow_ip == ip and is_platform_port(port)
+                }
             )
 
-    def _log_denial(self, ip: str, port: int, verdict: dict, now: float, flow: Flow) -> None:
+    def _log_denial(
+        self, ip: str, port: int, verdict: dict, now: float, flow: Flow
+    ) -> None:
         last = self._denial_log.get(ip)
         if last is not None and now - last < 60.0:
             return
@@ -340,12 +371,19 @@ class Engine:
                         self._current_started = now
                         self._current_rec = None
                         started.append(candidate)
-            elif self._current is not None and now - self._current.last_seen > MATCH_IDLE_END_S:
+            elif (
+                self._current is not None
+                and now - self._current.last_seen > MATCH_IDLE_END_S
+            ):
                 done = self._finish_match(now)
                 if done is not None:
                     finished.append(done)
 
-            if self._current is None and self._filtering and self._searching_since is None:
+            if (
+                self._current is None
+                and self._filtering
+                and self._searching_since is None
+            ):
                 self._searching_since = now
 
         # Recording a match writes and commits. Doing it outside the engine
@@ -361,9 +399,7 @@ class Engine:
             with self._lock:
                 if self._current is flow:
                     self._current_rec = rec
-            self.log(
-                f"match start {flow.ip}:{flow.port} ({self._place(rec)})"
-            )
+            self.log(f"match start {flow.ip}:{flow.port} ({self._place(rec)})")
 
     def _pick_candidate(self, now: float) -> Flow | None:
         best = None
@@ -436,19 +472,36 @@ class Engine:
             f"after {match['duration_s']}s allowed={str(match['allowed']).lower()} "
             f"({match['reason']})"
         )
-        if not match["allowed"] and match["duration_s"] < CANCEL_NOTICE_S:
+        if not match["allowed"]:
             with self._lock:
-                self._cancelled_total += 1
-                self._last_cancelled = {
-                    "ip": match["remote_ip"],
+                if match["duration_s"] < CANCEL_NOTICE_S:
+                    self._cancelled_total += 1
+                    self._last_cancelled = {
+                        "ip": match["remote_ip"],
+                        "cidr": match["cidr"],
+                        "city": match["city"],
+                        "region": match["region"],
+                        "country": match["country"],
+                        "duration_s": match["duration_s"],
+                        "reason": match["reason"],
+                        "at": time.time(),
+                    }
+                wall = time.time()
+                self._blocked_run = [
+                    t for t in self._blocked_run if wall - t <= BLOCK_RUN_WINDOW_S
+                ]
+                self._blocked_run.append(wall)
+                self._blocked_info = {
                     "cidr": match["cidr"],
                     "city": match["city"],
                     "region": match["region"],
-                    "country": match["country"],
-                    "duration_s": match["duration_s"],
-                    "reason": match["reason"],
-                    "at": time.time(),
+                    "region_key": rec.region_key if rec is not None else "",
+                    "at": wall,
                 }
+        else:
+            with self._lock:
+                self._blocked_run.clear()
+                self._blocked_info = None
 
     def _prune(self, now: float) -> None:
         stale = [k for k, f in self._flows.items() if now - f.last_seen > 60.0]
@@ -486,7 +539,9 @@ class Engine:
 
     def state(self) -> dict:
         searching = (
-            int(time.monotonic() - self._searching_since) if self._searching_since else None
+            int(time.monotonic() - self._searching_since)
+            if self._searching_since
+            else None
         )
         return {
             "filtering": self._filtering,
@@ -497,7 +552,13 @@ class Engine:
             "denied_packets": self._denied_total,
             "match_count": self._match_count,
             "cancelled_total": self._cancelled_total,
-            "last_cancelled": dict(self._last_cancelled) if self._last_cancelled else None,
+            "last_cancelled": dict(self._last_cancelled)
+            if self._last_cancelled
+            else None,
+            "blocked_run": len(self._blocked_run),
+            "blocked_limit": BLOCK_RUN_LIMIT,
+            "blocked_since": int(min(self._blocked_run)) if self._blocked_run else 0,
+            "blocked_info": dict(self._blocked_info) if self._blocked_info else None,
             "current": self.current_match(),
             "recent": list(self._recent_verdicts)[:20],
         }
