@@ -70,7 +70,9 @@ def cluster_key(row: dict) -> str:
 
 
 def region_key(row: dict) -> str:
-    return f"{row.get('country_code') or 'XX'}-{row.get('region_code') or ''}".rstrip("-")
+    return f"{row.get('country_code') or 'XX'}-{row.get('region_code') or ''}".rstrip(
+        "-"
+    )
 
 
 def asn_value(value) -> int:
@@ -215,9 +217,13 @@ class Catalog:
         """
         have = {row["name"] for row in self._conn.execute("PRAGMA table_info(ranges)")}
         if "asn" not in have:
-            self._conn.execute("ALTER TABLE ranges ADD COLUMN asn INTEGER NOT NULL DEFAULT 0")
+            self._conn.execute(
+                "ALTER TABLE ranges ADD COLUMN asn INTEGER NOT NULL DEFAULT 0"
+            )
         if "provider" not in have:
-            self._conn.execute("ALTER TABLE ranges ADD COLUMN provider TEXT NOT NULL DEFAULT ''")
+            self._conn.execute(
+                "ALTER TABLE ranges ADD COLUMN provider TEXT NOT NULL DEFAULT ''"
+            )
         if "match_server" not in have:
             self._conn.execute(
                 "ALTER TABLE ranges ADD COLUMN match_server INTEGER NOT NULL DEFAULT 0"
@@ -258,7 +264,9 @@ class Catalog:
         geo: dict[str, dict] = {}
         geo_file = paths.resource("data/seed_geo.json")
         if geo_file.exists():
-            for row in json.loads(geo_file.read_text(encoding="utf-8")).get("locations", []):
+            for row in json.loads(geo_file.read_text(encoding="utf-8")).get(
+                "locations", []
+            ):
                 geo[row["cidr"]] = row
 
         now = utcnow()
@@ -322,7 +330,9 @@ class Catalog:
 
     # -- observation -----------------------------------------------------
 
-    def observe(self, ip: str, size: int, rtt_ms: float | None = None, cidr: str | None = None) -> str:
+    def observe(
+        self, ip: str, size: int, rtt_ms: float | None = None, cidr: str | None = None
+    ) -> str:
         """Buffer traffic for a remote IP and return its /24 cidr."""
         cidr = cidr or cidr_for(ip)
         with self._pending_lock:
@@ -355,16 +365,27 @@ class Catalog:
                     self._conn.execute(
                         "INSERT INTO ranges (cidr, source, confidence, packets, bytes, rtt_ms, "
                         "first_seen, last_seen) VALUES (?, 'observed', 0.5, ?, ?, ?, ?, ?)",
-                        (cidr, slot["packets"], slot["bytes"],
-                         sum(slot["rtt"]) / len(slot["rtt"]) if slot["rtt"] else None,
-                         now, now),
+                        (
+                            cidr,
+                            slot["packets"],
+                            slot["bytes"],
+                            sum(slot["rtt"]) / len(slot["rtt"])
+                            if slot["rtt"]
+                            else None,
+                            now,
+                            now,
+                        ),
                     )
                     inserted.append(cidr)
                 else:
                     new_rtt = row["rtt_ms"]
                     if slot["rtt"]:
                         sample = sum(slot["rtt"]) / len(slot["rtt"])
-                        new_rtt = sample if new_rtt is None else (new_rtt * 0.7 + sample * 0.3)
+                        new_rtt = (
+                            sample
+                            if new_rtt is None
+                            else (new_rtt * 0.7 + sample * 0.3)
+                        )
                     self._conn.execute(
                         "UPDATE ranges SET packets = packets + ?, bytes = bytes + ?, "
                         "rtt_ms = ?, last_seen = ? WHERE cidr = ?",
@@ -406,7 +427,9 @@ class Catalog:
             self._conn.commit()
             self._touch_range(cidr)
 
-    def import_geo(self, records: Iterable[dict], source: str, confidence: float) -> int:
+    def import_geo(
+        self, records: Iterable[dict], source: str, confidence: float
+    ) -> int:
         """Merge third-party locations without overwriting better existing data."""
         now = utcnow()
         rows = [
@@ -582,7 +605,9 @@ class Catalog:
                     "city": g["city"],
                     "region": g["region"],
                     "region_code": g["region_code"],
-                    "region_key": f"{g['country_code'] or 'XX'}-{g['region_code'] or ''}".rstrip("-"),
+                    "region_key": f"{g['country_code'] or 'XX'}-{g['region_code'] or ''}".rstrip(
+                        "-"
+                    ),
                     "country": g["country"],
                     "country_code": g["country_code"],
                     "lat": g["lat_sum"] / n,
@@ -591,13 +616,17 @@ class Catalog:
                     "server_count": g["server_count"],
                     "packets": g["packets"],
                     "bytes": g["bytes"],
-                    "avg_rtt_ms": round(g["rtt_weighted"] / g["rtt_weight"]) if g["rtt_weight"] else None,
+                    "avg_rtt_ms": round(g["rtt_weighted"] / g["rtt_weight"])
+                    if g["rtt_weight"]
+                    else None,
                     "observed": g["packets"] > 0,
                     "confidence": round(g["max_confidence"], 2),
                     "last_seen": g["last_seen"],
                 }
             )
-        out.sort(key=lambda c: (-c["bytes"], c["country_code"], c["region_code"], c["city"]))
+        out.sort(
+            key=lambda c: (-c["bytes"], c["country_code"], c["region_code"], c["city"])
+        )
         return out
 
     def unlocated_observed(self, limit: int = 120) -> list[str]:
@@ -607,6 +636,29 @@ class Catalog:
             (limit,),
         ).fetchall()
         return [r["cidr"] for r in rows]
+
+    def provider_ranges(self) -> list[dict]:
+        """Every non-service range with the provider and cluster it belongs to.
+
+        Firewall rules are per region, so provider filtering needs the ranges
+        rather than the clusters: one cluster can hold several providers.
+        """
+        rows = self._conn.execute(
+            "SELECT cidr, city, region, region_code, country_code, provider, asn "
+            "FROM ranges WHERE is_service = 0"
+        ).fetchall()
+        out = []
+        for row in rows:
+            data = dict(row)
+            out.append(
+                {
+                    "cidr": data["cidr"],
+                    "cluster": cluster_key(data),
+                    "region_key": region_key(data),
+                    "provider": provider_label(data["provider"], data["asn"]),
+                }
+            )
+        return out
 
     def servers(self, query: str = "", limit: int = 400) -> list[dict]:
         sql = (
@@ -692,10 +744,18 @@ class Catalog:
                 "ended_at, duration_s, bytes, rtt_ms, allowed, reason) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    match["remote_ip"], match["cidr"], match["city"], match["region"],
-                    match["country"], match["started_at"], match["ended_at"],
-                    match["duration_s"], match["bytes"], match.get("rtt_ms"),
-                    1 if match["allowed"] else 0, match.get("reason", ""),
+                    match["remote_ip"],
+                    match["cidr"],
+                    match["city"],
+                    match["region"],
+                    match["country"],
+                    match["started_at"],
+                    match["ended_at"],
+                    match["duration_s"],
+                    match["bytes"],
+                    match.get("rtt_ms"),
+                    1 if match["allowed"] else 0,
+                    match.get("reason", ""),
                 ),
             )
             self._conn.execute(
@@ -742,10 +802,27 @@ class Catalog:
         ).fetchall()
         with target.open("w", newline="", encoding="utf-8") as fh:
             writer = csv.writer(fh)
-            writer.writerow([c for c in rows[0].keys()] if rows else [
-                "cidr", "city", "region", "country", "country_code", "provider", "asn",
-                "lat", "lon", "packets", "bytes", "rtt_ms", "source", "confidence", "last_seen",
-            ])
+            writer.writerow(
+                [c for c in rows[0].keys()]
+                if rows
+                else [
+                    "cidr",
+                    "city",
+                    "region",
+                    "country",
+                    "country_code",
+                    "provider",
+                    "asn",
+                    "lat",
+                    "lon",
+                    "packets",
+                    "bytes",
+                    "rtt_ms",
+                    "source",
+                    "confidence",
+                    "last_seen",
+                ]
+            )
             for r in rows:
                 writer.writerow(list(r))
         return target

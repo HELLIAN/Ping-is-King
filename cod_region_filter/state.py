@@ -11,7 +11,19 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import catalog_update, firewall as firewall_mod, games, geo, netwatch, paths, policy as policy_mod, services, startup, titlebar, updates
+from . import (
+    catalog_update,
+    firewall as firewall_mod,
+    games,
+    geo,
+    netwatch,
+    paths,
+    policy as policy_mod,
+    services,
+    startup,
+    titlebar,
+    updates,
+)
 from . import __version__
 from .catalog import Catalog, cidr_for, provider_label
 from .legacy import unload_driver
@@ -31,6 +43,7 @@ DEFAULT_CONFIG = {
     "theme": "midnight",
     "check_updates": True,
 }
+
 
 def clear_legacy_startup() -> None:
     """Drop autostart entries from older builds; they cannot start an elevated exe."""
@@ -110,9 +123,16 @@ class AppState:
         self._policy_lock = threading.RLock()
         self._clusters: list[dict] = []
         self._regions: list[dict] = []
+        self._provider_ranges: list[dict] = []
+        self._provider_ranges_version = -1
         self._seen_version = -1
         self._catalog_lock = threading.Lock()
-        self._catalog_update = {"running": False, "message": "", "report": [], "finished_at": 0.0}
+        self._catalog_update = {
+            "running": False,
+            "message": "",
+            "report": [],
+            "finished_at": 0.0,
+        }
         self._update_lock = threading.Lock()
         self._update = {
             "checking": False,
@@ -185,9 +205,13 @@ class AppState:
             f"starting {APP_VERSION}: elevated={self.elevated} capture={self.driver} "
             f"mode=firewall filtering={bool(self.config.get('filtering'))}"
         )
-        self.log(f"catalog: {len(self._clusters)} clusters in {len(self._regions)} regions")
+        self.log(
+            f"catalog: {len(self._clusters)} clusters in {len(self._regions)} regions"
+        )
         self.geo.start()
-        self._tick_thread = threading.Thread(target=self._tick_loop, name="tick", daemon=True)
+        self._tick_thread = threading.Thread(
+            target=self._tick_loop, name="tick", daemon=True
+        )
         self._tick_thread.start()
         self.firewall.start()
         if self.driver and self.elevated:
@@ -207,7 +231,10 @@ class AppState:
                 "error": "Traffic capture is unavailable. Reinstall the app.",
             }
         if not self.elevated:
-            return {"ok": False, "error": "Restart as administrator to observe traffic."}
+            return {
+                "ok": False,
+                "error": "Restart as administrator to observe traffic.",
+            }
         old = self.capture
         old.stop()
         if old.is_alive():
@@ -292,13 +319,41 @@ class AppState:
 
     def _firewall_groups(self) -> dict[str, list[str]]:
         groups: dict[str, list[str]] = {}
+        allowed: set[str] = set()
         for cluster in self._clusters:
             if self.policy_engine.decide("0.0.0.0", None, cluster)["allow"]:
+                allowed.add(cluster["key"])
                 continue
             groups.setdefault(cluster["region_key"], []).extend(cluster["cidrs"])
         manual = list(self.policy_engine.policy.deny.cidrs)
         if manual:
             groups["Manual"] = manual
+
+        # Provider rules need the range, not the cluster: one city can host
+        # several providers. This pass only adds blocks to clusters the region
+        # rules already allow, so location behaviour stays identical.
+        policy = self.policy_engine.policy
+        allow_providers = (
+            {provider_label(name) for name in policy.allow.providers}
+            if policy.mode == "allowlist"
+            else set()
+        )
+        deny_providers = {provider_label(name) for name in policy.deny.providers}
+        if (allow_providers or deny_providers) and allowed:
+            version = self.catalog.version
+            if version != self._provider_ranges_version:
+                self._provider_ranges = self.catalog.provider_ranges()
+                self._provider_ranges_version = version
+            for row in self._provider_ranges:
+                if row["cluster"] not in allowed:
+                    continue
+                name = row["provider"]
+                if not name:
+                    continue
+                if name in deny_providers or (
+                    allow_providers and name not in allow_providers
+                ):
+                    groups.setdefault(row["region_key"], []).append(row["cidr"])
         return groups
 
     def _sync_firewall(self) -> None:
@@ -324,13 +379,15 @@ class AppState:
 
     def remove_firewall_rules(self) -> dict:
         if self.engine.filtering:
-            return {"ok": False, "error": "Pause filtering before removing firewall rules."}
+            return {
+                "ok": False,
+                "error": "Pause filtering before removing firewall rules.",
+            }
         if not firewall_mod.available():
             return {"ok": False, "error": "Windows Firewall is not available."}
         self.firewall.clear()
         self.log("firewall rules removed from Settings")
         return {"ok": True}
-
 
     def _queue_geo(self) -> None:
         rows = self.catalog.unlocated_observed(120)
@@ -391,7 +448,9 @@ class AppState:
                     "cluster_count": g["cluster_count"],
                     "server_count": g["server_count"],
                     "bytes": g["bytes"],
-                    "avg_rtt_ms": round(g["rtt_weighted"] / g["rtt_weight"]) if g["rtt_weight"] else None,
+                    "avg_rtt_ms": round(g["rtt_weighted"] / g["rtt_weight"])
+                    if g["rtt_weight"]
+                    else None,
                     "lat": g["lat_sum"] / n,
                     "lon": g["lon_sum"] / n,
                     "observed": g["observed"],
@@ -491,8 +550,7 @@ class AppState:
 
         rec = self.catalog.index().find(ip)
         if blocked and (
-            (rec is not None and rec.is_service)
-            or self.policy_engine.is_service_ip(ip)
+            (rec is not None and rec.is_service) or self.policy_engine.is_service_ip(ip)
         ):
             # Blocking auth, lobby or CDN endpoints breaks online play entirely.
             return {
@@ -548,7 +606,12 @@ class AppState:
 
     def home_payload(self) -> dict:
         p = self.policy_engine.policy
-        home = {"lat": p.home_lat, "lon": p.home_lon, "label": "Not set", "hidden": False}
+        home = {
+            "lat": p.home_lat,
+            "lon": p.home_lon,
+            "label": "Not set",
+            "hidden": False,
+        }
         if p.home_lat is None or p.home_lon is None:
             return home
         if self.streamer_mode():
@@ -574,7 +637,9 @@ class AppState:
                 nearest = (distance, cluster)
         if nearest and nearest[0] <= 150:
             place = ", ".join(
-                part for part in (nearest[1].get("city"), nearest[1].get("region")) if part
+                part
+                for part in (nearest[1].get("city"), nearest[1].get("region"))
+                if part
             )
             if place:
                 home["near"] = place
@@ -597,19 +662,24 @@ class AppState:
 
         def mutate(p: policy_mod.Policy) -> None:
             chosen = {
-                r["key"] for r in self._regions
+                r["key"]
+                for r in self._regions
                 if r.get("avg_rtt_ms") is not None and r["avg_rtt_ms"] <= max_rtt
             }
             if not chosen and home_lat is not None and home_lon is not None:
                 located = [r for r in self._regions if r.get("lat") is not None]
                 located.sort(
-                    key=lambda r: policy_mod.haversine_km(home_lat, home_lon, r["lat"], r["lon"])
+                    key=lambda r: policy_mod.haversine_km(
+                        home_lat, home_lon, r["lat"], r["lon"]
+                    )
                 )
                 chosen = {r["key"] for r in located[:6]}
             if not chosen:
                 # Fresh seed has no measured RTT and may not have a home yet; start
                 # with the densest regions so the policy is never empty.
-                densest = sorted(self._regions, key=lambda r: r["server_count"], reverse=True)
+                densest = sorted(
+                    self._regions, key=lambda r: r["server_count"], reverse=True
+                )
                 chosen = {r["key"] for r in densest[:6]}
             p.allow.regions = sorted(chosen)
             p.mode = "allowlist"
@@ -670,7 +740,11 @@ class AppState:
 
     def set_unknown(self, mode: str) -> dict:
         if mode not in ("allow", "deny"):
-            return {"ok": False, "errors": ["unknown must be allow or deny"], "warnings": []}
+            return {
+                "ok": False,
+                "errors": ["unknown must be allow or deny"],
+                "warnings": [],
+            }
 
         def mutate(p: policy_mod.Policy) -> None:
             p.unknown = mode
@@ -680,14 +754,23 @@ class AppState:
     def set_provider_rule(self, provider: str, rule: str) -> dict:
         """Set one provider's rule: none, allow or deny."""
         if rule not in policy_mod.PROVIDER_RULES:
-            return {"ok": False, "errors": [f"rule must be one of {', '.join(policy_mod.PROVIDER_RULES)}"]}
+            return {
+                "ok": False,
+                "errors": [
+                    f"rule must be one of {', '.join(policy_mod.PROVIDER_RULES)}"
+                ],
+            }
         name = provider_label(provider)
         if not name:
             return {"ok": False, "errors": ["provider is empty"]}
 
         def mutate(p: policy_mod.Policy) -> None:
-            p.allow.providers = [x for x in p.allow.providers if provider_label(x) != name]
-            p.deny.providers = [x for x in p.deny.providers if provider_label(x) != name]
+            p.allow.providers = [
+                x for x in p.allow.providers if provider_label(x) != name
+            ]
+            p.deny.providers = [
+                x for x in p.deny.providers if provider_label(x) != name
+            ]
             if rule == "allow":
                 p.allow.providers = sorted(p.allow.providers + [name])
             elif rule == "deny":
@@ -727,8 +810,7 @@ class AppState:
             item = dict(r)
             item["allowed"] = r["key"] in in_allow_regions
             item["blocked"] = (
-                r["key"] in deny_regions
-                or r["country_code"] in deny_countries
+                r["key"] in deny_regions or r["country_code"] in deny_countries
             )
             item["permitted"] = r["key"] in permitted_regions
             item["label"] = r["region"] or r["country"] or "Unknown"
@@ -746,7 +828,9 @@ class AppState:
             row["region_key"] = rec.region_key if rec else ""
             row["allowed"] = verdict["allow"]
             row["verdict"] = verdict["reason"]
-            row["provider"] = provider_label(row.get("provider") or "", row.get("asn") or 0)
+            row["provider"] = provider_label(
+                row.get("provider") or "", row.get("asn") or 0
+            )
             if streamer:
                 row["cidr"] = "Hidden range"
             out.append(row)
@@ -760,7 +844,9 @@ class AppState:
         for row in data["providers"]:
             name = row["provider"]
             # Deny wins; the policy engine relies on the same order.
-            row["rule"] = "deny" if name in denied else "allow" if name in allowed else "none"
+            row["rule"] = (
+                "deny" if name in denied else "allow" if name in allowed else "none"
+            )
         return data
 
     def matches_payload(self, limit: int = 10) -> list[dict]:
@@ -814,7 +900,11 @@ class AppState:
 
     def check_updates(self, manual: bool = True) -> dict:
         with self._update_lock:
-            if self._update["checking"] or self._update["downloading"] or self._update["installing"]:
+            if (
+                self._update["checking"]
+                or self._update["downloading"]
+                or self._update["installing"]
+            ):
                 return {"ok": False, "error": "An update task is already running."}
             self._update.update(
                 checking=True,
@@ -868,7 +958,9 @@ class AppState:
 
     def _finish_update_check(self, error: str) -> None:
         with self._update_lock:
-            self._update.update(checking=False, checked=True, available=False, error=error)
+            self._update.update(
+                checking=False, checked=True, available=False, error=error
+            )
         self.log(f"update check failed: {error}")
 
     def download_update(self) -> dict:
@@ -887,7 +979,9 @@ class AppState:
                     downloaded=True, progress=100, installer=str(target), error=""
                 )
                 return {"ok": True}
-            self._update.update(downloading=True, progress=0, downloaded=False, error="")
+            self._update.update(
+                downloading=True, progress=0, downloaded=False, error=""
+            )
         threading.Thread(
             target=self._run_update_download,
             args=(url, target, sha, size),
@@ -918,7 +1012,11 @@ class AppState:
             return
         with self._update_lock:
             self._update.update(
-                downloading=False, progress=100, downloaded=True, installer=str(target), error=""
+                downloading=False,
+                progress=100,
+                downloaded=True,
+                installer=str(target),
+                error="",
             )
         self.log(f"update downloaded: {target.name}")
 
@@ -931,7 +1029,10 @@ class AppState:
             installer = Path(self._update["installer"])
             version = self._update["version"]
         if not self.elevated:
-            return {"ok": False, "error": "Restart as administrator to install updates."}
+            return {
+                "ok": False,
+                "error": "Restart as administrator to install updates.",
+            }
         args = [] if getattr(sys, "frozen", False) else ["-m", "cod_region_filter"]
         try:
             updates.launch_installer(
@@ -997,9 +1098,14 @@ class AppState:
             if self._catalog_update["running"]:
                 return {"ok": False, "error": "An update is already running."}
             self._catalog_update.update(
-                running=True, message="Downloading public server lists...", report=[], finished_at=0.0
+                running=True,
+                message="Downloading public server lists...",
+                report=[],
+                finished_at=0.0,
             )
-        threading.Thread(target=self._run_catalog_update, name="catalog-update", daemon=True).start()
+        threading.Thread(
+            target=self._run_catalog_update, name="catalog-update", daemon=True
+        ).start()
         return {"ok": True}
 
     def _run_catalog_update(self) -> None:
@@ -1056,7 +1162,10 @@ class AppState:
 
     def export_discovered(self) -> dict:
         if self.streamer_mode():
-            return {"ok": False, "error": "Turn off streamer mode to export server addresses."}
+            return {
+                "ok": False,
+                "error": "Turn off streamer mode to export server addresses.",
+            }
         rows = self.catalog.discovered_ranges()
         docs = Path.home() / "Documents"
         target_dir = docs if docs.is_dir() else Path.home()
@@ -1078,7 +1187,10 @@ class AppState:
 
     def export_policy(self) -> dict:
         if self.streamer_mode():
-            return {"ok": False, "error": "Turn off streamer mode to export your policy."}
+            return {
+                "ok": False,
+                "error": "Turn off streamer mode to export your policy.",
+            }
         docs = Path.home() / "Documents"
         target_dir = docs if docs.is_dir() else Path.home()
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -1104,6 +1216,3 @@ class AppState:
         self.catalog.reset()
         self.refresh_catalog()
         return {"ok": True}
-
-
-

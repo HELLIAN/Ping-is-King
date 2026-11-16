@@ -74,6 +74,62 @@ def test_manual_deny_ranges_are_sent_to_the_firewall(state):
     assert state._firewall_groups() == {"Manual": ["45.63.1.0/24"]}
 
 
+def _add_provider_ranges(state):
+    state.catalog.import_geo(
+        [
+            {
+                "cidr": "198.18.0.0/24",
+                "city": "Ashburn",
+                "region": "Virginia",
+                "region_code": "VA",
+                "country": "United States",
+                "country_code": "US",
+                "lat": 39.0438,
+                "lon": -77.4874,
+                "asn": "AS8075",
+                "provider": "Microsoft Corporation",
+            },
+            {
+                "cidr": "198.18.1.0/24",
+                "city": "Ashburn",
+                "region": "Virginia",
+                "region_code": "VA",
+                "country": "United States",
+                "country_code": "US",
+                "lat": 39.0438,
+                "lon": -77.4874,
+                "asn": "AS20473",
+                "provider": "The Constant Company",
+            },
+        ],
+        "test",
+        0.9,
+    )
+    state.update_policy(lambda p: setattr(p, "mode", "allowlist"))
+    state.set_regions(["US-VA"], True)
+    state.refresh_catalog()
+
+
+def test_provider_block_reaches_the_firewall(state):
+    _add_provider_ranges(state)
+    state.set_provider_rule("Microsoft Azure", "deny")
+
+    groups = state._firewall_groups()
+
+    assert "198.18.0.0/24" in groups["US-VA"]
+    assert "198.18.1.0/24" not in groups["US-VA"]
+
+
+def test_provider_allow_only_blocks_other_providers(state):
+    _add_provider_ranges(state)
+    state.set_provider_rule("Vultr", "allow")
+
+    groups = state._firewall_groups()
+
+    assert "198.18.0.0/24" in groups["US-VA"]
+    assert "198.18.1.0/24" not in groups["US-VA"]
+
+
 def test_recommended_policy_denies_unclassified_endpoints(state):
     state.set_home(40.6171, -80.587)
     result = state.apply_recommended(40)
@@ -159,7 +215,9 @@ def test_streamer_mode_hides_identifying_details(state):
 
 def test_pausing_filtering_clears_firewall(state, monkeypatch):
     calls = []
-    monkeypatch.setattr(state.firewall, "sync", lambda exes, groups: calls.append((exes, groups)))
+    monkeypatch.setattr(
+        state.firewall, "sync", lambda exes, groups: calls.append((exes, groups))
+    )
     state.engine.set_filtering(True)
 
     state.set_setting("filtering", False)
